@@ -424,7 +424,30 @@ body{font-family:'Apple SD Gothic Neo',-apple-system,BlinkMacSystemFont,sans-ser
       <div class="ctbl-wrap" id="finalPreview" style="margin:0;"></div>
     </div>
     <div id="genArea" style="margin-top:1rem;">
-      <button class="btn btn-gen" onclick="generate()"><i class="ti ti-download"></i><span id="genTxt">일괄입과 파일 생성 및 다운로드</span></button>
+      <!-- 고객사명 입력 -->
+      <div style="background:#fff;border:1px solid var(--g200);border-radius:var(--r-lg);padding:1rem 1.25rem;margin-bottom:.875rem;display:flex;align-items:center;gap:12px;">
+        <label style="font-size:13px;font-weight:600;color:var(--g700);white-space:nowrap;"><i class="ti ti-building" style="margin-right:4px;"></i>고객사명</label>
+        <input type="text" id="customerNameInput" placeholder="예: 한국소비자원" style="flex:1;height:36px;padding:0 10px;border:1px solid var(--g300);border-radius:var(--r-sm);font-size:13px;font-family:inherit;">
+        <span style="font-size:12px;color:var(--g500);">내부 시스템 자동 업로드 시 사용</span>
+      </div>
+
+      <!-- 버튼 그룹 -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+        <button class="btn btn-gen" onclick="generate(false)" style="border-radius:var(--r-lg);">
+          <i class="ti ti-download"></i><span id="genTxt">파일 생성 및 다운로드</span>
+        </button>
+        <button class="btn btn-gen" id="autoUploadBtn" onclick="generateAndUpload()" style="background:var(--green);box-shadow:0 4px 12px rgba(59,109,17,.25);border-radius:var(--r-lg);">
+          <i class="ti ti-rocket"></i><span id="autoTxt">파일 생성 + 자동 업로드</span>
+        </button>
+      </div>
+
+      <!-- 확장 프로그램 미설치 안내 -->
+      <div id="extNotice" style="display:none;margin-top:.75rem;">
+        <div class="alert alert-warn"><i class="ti ti-alert-triangle"></i>
+          <span>자동 업로드 기능은 <strong>크롬 확장 프로그램</strong> 설치가 필요해요.
+          <a href="#" onclick="showExtGuide()" style="color:var(--amber);font-weight:600;">설치 방법 보기 →</a></span>
+        </div>
+      </div>
     </div>
     <div id="resultArea" style="margin-top:1rem;"></div>
     <div class="nav-row">
@@ -1064,7 +1087,7 @@ function getUsersForCourse(i){
   return users;
 }
 
-function generate(){
+function generate(autoUpload=false){
   const btn=document.querySelector('.btn-gen');
   btn.disabled=true;
   document.getElementById('genTxt').innerHTML='<span class="spinner"></span> 생성 중...';
@@ -1125,7 +1148,55 @@ function generate(){
       const d=new Date();
       const ds=`${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
       const totalDataRows=rows.length-1;
-      XLSX.writeFile(wb,`${ds}_일괄입과_${courses.length}과정_${users.length}명.xlsx`);
+      const fileName = `${ds}_일괄입과_${courses.length}과정_${users.length}명.xlsx`;
+
+      if (autoUpload) {
+        // 자동 업로드: base64로 변환 후 확장 프로그램에 전달
+        const wbout = XLSX.write(wb, { bookType:'xlsx', type:'base64' });
+        const customerName = document.getElementById('customerNameInput').value.trim();
+        if (!customerName) {
+          document.querySelector('.btn-gen').disabled=false;
+          document.getElementById('genTxt').innerHTML='<i class="ti ti-download"></i> 파일 생성 및 다운로드';
+          document.getElementById('autoTxt').innerHTML='<i class="ti ti-rocket"></i> 파일 생성 + 자동 업로드';
+          alert('고객사명을 입력해주세요!');
+          return;
+        }
+        // 확장 프로그램에 메시지 전송
+        if (typeof chrome !== 'undefined' && chrome.runtime) {
+          try {
+            chrome.runtime.sendMessage(
+              undefined,
+              { type:'UPLOAD_REQUEST', fileName, fileData: wbout, customerName },
+              (resp) => {
+                if (chrome.runtime.lastError) {
+                  document.getElementById('extNotice').style.display='block';
+                  // 다운로드로 폴백
+                  XLSX.writeFile(wb, fileName);
+                } else {
+                  document.getElementById('resultArea').innerHTML=`
+                    <div class="result-box" style="background:var(--green-l);border-color:var(--green-m);">
+                      <i class="ti ti-rocket ri" style="color:var(--green);"></i>
+                      <h3 style="color:var(--green-d);">자동 업로드 시작!</h3>
+                      <p style="color:var(--green);">내부 시스템이 자동으로 열리고 파일이 업로드됩니다.<br>
+                      화면 우측 상단의 진행 상태를 확인하세요.</p>
+                    </div>`;
+                  document.getElementById('genArea').style.display='none';
+                  // 이력 저장
+                  saveHistory({ fileName, customerName, success:true, timestamp:Date.now() });
+                }
+              }
+            );
+          } catch(e) {
+            document.getElementById('extNotice').style.display='block';
+            XLSX.writeFile(wb, fileName);
+          }
+        } else {
+          document.getElementById('extNotice').style.display='block';
+          XLSX.writeFile(wb, fileName);
+        }
+      } else {
+        XLSX.writeFile(wb, fileName);
+      }
 
       document.getElementById('genArea').style.display='none';
       document.getElementById('resultArea').innerHTML=`
@@ -1141,6 +1212,23 @@ function generate(){
       document.getElementById('resultArea').innerHTML=`<div class="alert alert-error" style="margin-top:.75rem;"><i class="ti ti-alert-circle"></i>오류: ${err.message}</div>`;
     }
   },200);
+}
+
+function generateAndUpload(){
+  generate(true);
+}
+
+function saveHistory(item) {
+  if(typeof chrome==='undefined'||!chrome.storage) return;
+  chrome.storage.local.get(['uploadHistory'],(data)=>{
+    const history = data.uploadHistory || [];
+    history.unshift(item);
+    chrome.storage.local.set({ uploadHistory: history.slice(0,50) });
+  });
+}
+
+function showExtGuide() {
+  alert('확장 프로그램 설치 방법:\n\n1. Claude에게 받은 enrollment-extension 폴더를 PC에 저장\n2. 크롬 주소창에 chrome://extensions 입력\n3. 우측 상단 "개발자 모드" 켜기\n4. "압축해제된 확장 프로그램 로드" 클릭\n5. enrollment-extension 폴더 선택\n6. 설치 완료!');
 }
 
 function resetAll(){
